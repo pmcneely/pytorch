@@ -40,12 +40,6 @@ def define_targets(rules):
               "--gen-dir=$(RULEDIR) " +
               "--native-functions-path $(location :native_functions.yaml) " +
               "--gen_lazy_ts_backend",
-        tags = [
-            # Filter this target out for Bazel until we are ready to
-            # use it. When we refactor this for fbcode it will start
-            # to conflict with the Bazel code generator.
-            "-bazel",
-        ],
     )
 
     rules.genrule(
@@ -115,4 +109,7 @@ _GENERATED_CPP = [
     "torch/csrc/autograd/generated/python_torch_functions_1.cpp",
     "torch/csrc/autograd/generated/python_torch_functions_2.cpp",
     "torch/csrc/autograd/generated/python_variable_methods.cpp",
+    "torch/csrc/lazy/generated/LazyNativeFunctions.cpp",
+    "torch/csrc/lazy/generated/RegisterAutogradLazy.cpp",
+    "torch/csrc/lazy/generated/RegisterLazy.cpp",
 ]
