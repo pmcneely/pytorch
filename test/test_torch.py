@@ -2756,7 +2756,6 @@ else:
             self.assertEqual(sz, y.size())
 
     # FIXME: move to indexing test suite
-    @onlyCPU
     @parametrize("reduce", ['prod', 'amin', 'amax', 'mean'])
     @dtypes(*floating_types_and(torch.half, torch.bfloat16))
     def test_index_reduce(self, device, dtype, reduce):
