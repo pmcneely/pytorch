@@ -6,7 +6,7 @@ import functools
 import inspect
 import numbers
 import sys
-from typing import (Any, Dict, Iterator, Generic, List, Set, Tuple, TypeVar, Union,
+from typing import (Any, Dict, Iterator, Generic, List, Optional, Set, Tuple, TypeVar, Union,
                     get_type_hints)
 from typing import _eval_type, _tp_cache, _type_check, _type_repr  # type: ignore[attr-defined]
 from typing import ForwardRef
@@ -202,7 +202,7 @@ def issubinstance(data, data_type):
 # [Note: TypeMeta and TypeAlias]
 # In order to keep compatibility for Python 3.6, use Meta for the typing.
 # TODO: When PyTorch drops the support for Python 3.6, it can be converted
-# into the Alias system and using `__class_getiterm__` for DataPipe. The
+# into the Alias system and using `__class_getitem__` for DataPipe. The
 # typing system will gain benefit of performance and resolving metaclass
 # conflicts as elaborated in https://www.python.org/dev/peps/pep-0560/
 
@@ -369,15 +369,49 @@ def _generate_input_args_string(obj):
     return ', '.join([f'{name}={value}' for name, value in result])
 
 
-def hook_iterator(namespace, profile_name):
+def _generate_iterdatapipe_msg(datapipe):
+    return f"{datapipe.__class__.__name__}({_generate_input_args_string(datapipe)})"
 
+
+def _check_iterator_valid(datapipe, iterator_id) -> None:
+    r"""
+    Given an instance of a DataPipe and an iterator ID, check if they match, and if not, raises an exception.
+    """
+    if hasattr(datapipe, "_is_child_datapipe") and datapipe._is_child_datapipe is True:
+        pass  # TODO: Add logic for multiple ChildDataPipe
+    else:
+        if datapipe._valid_iterator_id == iterator_id:
+            pass
+        else:
+            raise RuntimeError("This iterator has been invalidated, because another iterator has been created"
+                               f"from the same IterDataPipe: {_generate_iterdatapipe_msg(datapipe)}")
+
+
+def _set_datapipe_valid_iterator_id(datapipe):
+    r"""
+    Given a DataPipe, set or update its valid iterator ID.
+    """
+    if datapipe._valid_iterator_id is None:
+        datapipe._valid_iterator_id = 0
+    else:
+        datapipe._valid_iterator_id += 1
+    return datapipe._valid_iterator_id
+
+
+def hook_iterator(namespace, profile_name):
+    r"""
+    Hook that is applied to all `__iter__` of metaclass `_DataPipeMeta`. This is done for the purpose of
+    profiling and checking if an iterator is still valid.
+    """
     def context():
         return torch.autograd.profiler.record_function(profile_name)
 
     class IteratorDecorator:
-        '''Wrap the iterator return result by adding __next__'''
-        def __init__(self, iterator):
+        """Wrap the iterator return result by adding __next__"""
+        def __init__(self, iterator, source_dp, iterator_id):
             self.iterator = iterator
+            self.source_dp = source_dp
+            self.iterator_id = iterator_id
 
         def __iter__(self):
             return self
@@ -386,24 +420,29 @@ def hook_iterator(namespace, profile_name):
             # TODO: Add try-except to in-place reduce traceback from the Exception
             # See: https://github.com/pytorch/data/issues/284
             with context():
+                _check_iterator_valid(self.source_dp, self.iterator_id)
                 return next(self.iterator)
 
         def __getattr__(self, name):
             return getattr(self.iterator, name)
 
     func = namespace['__iter__']
+    iterator_id: Optional[int] = None
 
     # ``__iter__`` of IterDataPipe is a generator function
     if inspect.isgeneratorfunction(func):
         @functools.wraps(func)
         def wrap_generator(*args, **kwargs):
             gen = func(*args, **kwargs)
+            datapipe = args[0]
+            iterator_id = _set_datapipe_valid_iterator_id(datapipe)
             try:
                 with context():
                     response = gen.send(None)
                 while True:
                     request = yield response
-                    with context():
+                    with context():  # Pass through here every time `__next__` is called
+                        _check_iterator_valid(datapipe, iterator_id)
                         response = gen.send(request)
             except StopIteration as e:
                 return e.value
@@ -420,21 +459,27 @@ def hook_iterator(namespace, profile_name):
         namespace['__iter__'] = wrap_generator
     else:
         # IterDataPipe is an iterator with both ``__iter__`` and ``__next__``
+        # And ``__iter__`` returns `self`
         if '__next__' in namespace:
             next_func = namespace['__next__']
 
             @functools.wraps(next_func)
             def wrap_next(*args, **kwargs):
                 with context():
+                    # If `__iter__` returns `self`, then the object can always have only one iterator at a time
+                    # by default, such that no additional logic is needed.
                     return next_func(*args, **kwargs)
 
             namespace['__next__'] = wrap_next
-        # ``__iter__`` of IterDataPipe returns an iterator other than self
+        # ``__iter__`` of IterDataPipe returns an iterator other than `self` (or simply doesn't have ``__next__``)
         else:
             @functools.wraps(func)
             def wrap_iter(*args, **kwargs):
                 iter_ret = func(*args, **kwargs)
-                return IteratorDecorator(iter_ret)
+                datapipe = args[0]
+                nonlocal iterator_id
+                iterator_id = _set_datapipe_valid_iterator_id(datapipe)
+                return IteratorDecorator(iter_ret, datapipe, iterator_id)
 
             namespace['__iter__'] = wrap_iter
 
