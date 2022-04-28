@@ -29,6 +29,7 @@ register_default_op(torch.Tensor.size)
 register_default_op(torch.Tensor.dim)
 register_default_op(torch.Tensor.ndim.__get__)  # type: ignore[attr-defined]
 register_default_op(torch.Tensor.is_contiguous)
+register_default_op(torch.Tensor.contiguous)
 
 # __reduce_ex__ to dispatch to get_state/set_state
 register_default_op(torch.Tensor.__reduce_ex__)
